@@ -6,7 +6,7 @@ use std::{
     thread,
 };
 
-use crate::{dictionary::{Dictionary, Posting}, indexer::{helper::vb_decode_posting_list, index_merge_iterator::merge_index_files, spimi::write_block_to_disk}, my_bk_tree::BkTree, positional_intersect::find_documents_optimized, scoring::{ScoredDoc, get_document_frequency, get_inverse_document_frequency, get_term_frequency, get_tf_idf_weight}, tokenizer::SearchTokenizer};
+use crate::{dictionary::{Dictionary, Posting}, indexer::{helper::vb_decode_posting_list}, positional_intersect::find_documents_optimized, query_parser::tokenizer::SearchTokenizer, scoring::{ScoredDoc, get_document_frequency, get_inverse_document_frequency, get_term_frequency, get_tf_idf_weight}};
 
 pub struct QueryResult {
     doc_ids: Vec<u32>,
@@ -26,7 +26,6 @@ impl PostingOffset {
     }
 }
 pub struct SearchEngine {
-    bk_tree: BkTree,
     no_of_docs: u32,
     index_file: Option<Mutex<File>>,
     block_id: u8,
@@ -50,7 +49,6 @@ impl SearchEngine {
             }
         };
         Ok(Self {
-            bk_tree: BkTree::new(),
             no_of_docs: 0,
             index_file: None,
             block_id: 1,
@@ -63,82 +61,43 @@ impl SearchEngine {
         })
     }
 
-    fn scan_index_directory(&self, directory: &str) -> Result<Vec<File>, io::Error> {
-        let mut file_handles = Vec::new();
-
-        let entries = fs::read_dir(directory)?;
-
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
-
-            if path.is_file() {
-                if let Some(extension) = path.extension() {
-                    if extension == "txt" {
-                        let file = File::open(&path)?;
-                        file_handles.push(file);
-                    }
-                }
-            }
-        }
-
-        Ok(file_handles)
-    }
-
     pub fn init(&mut self) -> Result<(), io::Error> {
-        let files_to_index = self
-            .scan_index_directory(&self.index_path)
-            .unwrap_or(Vec::new());
-        for mut file in files_to_index {
-            let mut buffer = String::new();
-            file.read_to_string(&mut buffer)?;
-            let tokens = self.query_parser.tokenize(buffer);
-            if tokens.is_err() {
-                return Err(io::Error::new(io::ErrorKind::Unsupported, ""));
-            }
-            self.doc_id = self.doc_id + 1;
-            let mut doc_postings: HashMap<String, Vec<u32>> = HashMap::new();
-            for token in &tokens.unwrap() {
-                doc_postings
-                    .entry(token.word.clone())
-                    .or_insert(Vec::new())
-                    .push(token.position);
-            }
-            for (term, positions) in doc_postings {
-                let mut dictionary = self.indexing_dictionary.lock().unwrap();
-                dictionary.add_term(&term);
-                dictionary.append_to_term(
-                    &term,
-                    Posting {
-                        doc_id: self.doc_id,
-                        positions: positions,
-                    },
-                );
-            }
-            {
-                let mut dictionary = self.indexing_dictionary.lock().unwrap();
-                if dictionary.get_size() > 4096 {
-                    write_block_to_disk(
-                        &(self.block_id.to_string() + ".idx"),
-                        &dictionary.sort_terms(),
-                        &dictionary,
-                    )?;
-                    dictionary.clear();
-                    self.block_id = self.block_id + 1;
-                }
-            }
-        }
+        // let files_to_index = self
+        //     .scan_index_directory(&self.index_path)
+        //     .unwrap_or(Vec::new());
+        // for mut file in files_to_index {
+        //     let mut buffer = String::new();
+        //     file.read_to_string(&mut buffer)?;
+        //     let tokens = self.query_parser.tokenize(buffer);
+        //     if tokens.is_err() {
+        //         return Err(io::Error::new(io::ErrorKind::Unsupported, ""));
+        //     }
+        //     self.doc_id = self.doc_id + 1;
+        //     let mut doc_postings: HashMap<String, Vec<u32>> = HashMap::new();
+        //     for token in &tokens.unwrap() {
+        //         doc_postings
+        //             .entry(token.word.clone())
+        //             .or_insert(Vec::new())
+        //             .push(token.position);
+        //     }
+        //     for (term, positions) in doc_postings {
+        //         let mut dictionary = self.indexing_dictionary.lock().unwrap();
+        //         dictionary.add_term(&term);
+        //         dictionary.append_to_term(
+        //             &term,
+        //             Posting {
+        //                 doc_id: self.doc_id,
+        //                 positions: positions,
+        //             },
+        //         );
+        //     }
+        // }
 
-        let merge_index_result = merge_index_files(4)?;
-        // let Some(merge_index) = merge_index_result else {
-        //     return Err(io::Error::new(io::ErrorKind::Unsupported, ""));
-        // };
-
-        // self.doc_length = merge_index.doc_lengths;
-        // self.bk_tree = merge_index.bk_tree;
-        let index_file = File::open("final.idx")?;
-        self.index_file = Some(Mutex::new(index_file));
-        // self.in_memory_index = Arc::new(Mutex::new(merge_index.in_memory_dict));
+        // // self.doc_length = merge_index.doc_lengths;
+        // // self.bk_tree = merge_index.bk_tree;
+        // let index_file = File::open("final.idx")?;
+        // self.index_file = Some(Mutex::new(index_file));
+        // // self.in_memory_index = Arc::new(Mutex::new(merge_index.in_memory_dict));
         Ok(())
     }
 

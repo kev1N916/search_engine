@@ -1,14 +1,15 @@
-mod tokenizer;
+mod compressors;
 mod dictionary;
-mod spimi;
-mod positional_intersect;
-mod in_memory_dict;
 mod helpers;
+mod in_memory_dict;
+mod indexer;
+mod my_bk_tree;
+mod positional_intersect;
+mod query_parser;
 mod scoring;
 pub mod search_engine;
-mod my_bk_tree;
-mod compressors;
-mod indexer;
-fn main() {
-    println!("Hello, world!");
+mod spimi;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    Ok(())
 }

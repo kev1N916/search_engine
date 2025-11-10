@@ -16,23 +16,28 @@ pub struct Term {
 
 #[derive(Debug, Clone)]
 pub struct Dictionary {
-    size: u32,
+    current_size: u32,
     dictionary: HashMap<String, Vec<Posting>>,
 }
 
 impl Dictionary {
     pub fn new() -> Dictionary {
         return Dictionary {
-            size: 0,
+            current_size: 0,
             dictionary: HashMap::new(),
         };
     }
-    pub fn clear(& mut self){
+
+    pub fn max_size(& self)->u32{
+        return 10000000;
+    }
+    pub fn size(& self) -> u32 {
+        self.current_size
+    }
+    pub fn clear(&mut self) {
         self.dictionary.clear();
     }
-    pub fn get_size(& self)->u32{
-        self.size
-    }
+
     pub fn does_term_already_exist(&mut self, term: &str) -> bool {
         return self.dictionary.contains_key(term);
     }
@@ -42,9 +47,10 @@ impl Dictionary {
         self.dictionary.insert(String::from(term), posting);
         for posting in posting_list {
             let posting_length = posting.positions.len() as u32;
-            self.size = self.size + 4 + 4 * posting_length;
+            self.current_size += 4 + 4 * posting_length;
         }
-        self.size = self.size + term.len() as u32;
+        self.current_size+=4;
+        self.current_size += term.len() as u32;
     }
 
     pub fn get_postings(&self, term: &str) -> Option<Vec<Posting>> {
@@ -57,7 +63,8 @@ impl Dictionary {
     pub fn add_term(&mut self, term: &str) {
         if !self.does_term_already_exist(term) {
             self.dictionary.insert(String::from(term), Vec::new());
-            self.size = self.size + term.len() as u32
+            self.current_size+=4;
+            self.current_size +=term.len() as u32
         }
     }
 
@@ -65,7 +72,7 @@ impl Dictionary {
         if let Some(postings_list) = self.dictionary.get_mut(term) {
             let posting_length = posting.positions.len() as u32;
             postings_list.push(posting);
-            self.size = self.size + 4 + 4 * posting_length;
+            self.current_size += 4 + 4 * posting_length;
         }
     }
 

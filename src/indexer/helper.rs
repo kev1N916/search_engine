@@ -1,12 +1,6 @@
-use std::{
-    fs::File,
-    io::{self, BufReader, Read, Seek},
-};
-
 use crate::{
     compressors::vb_encode::{vb_decode, vb_encode},
     dictionary::Posting,
-    indexer::chunk::Chunk,
 };
 
 pub(crate) fn vb_decode_positions(bytes: &[u8]) -> Vec<u32> {
@@ -116,4 +110,222 @@ pub(crate) fn vb_encode_posting_list(posting_list: &Vec<Posting>) -> Vec<u8> {
     }
 
     posting_list_bytes
+}
+
+#[cfg(test)]
+mod posting_list_encode_decode_tests {
+    use super::*;
+
+    #[test]
+    fn test_empty_posting_list() {
+        let original: Vec<Posting> = Vec::new();
+        let encoded = vb_encode_posting_list(&original);
+        let decoded = vb_decode_posting_list(&encoded);
+
+        assert_eq!(original, decoded);
+        assert_eq!(encoded.len(), 0);
+    }
+
+    #[test]
+    fn test_single_posting_single_position() {
+        let original = vec![Posting {
+            doc_id: 42,
+            positions: vec![10],
+        }];
+        let encoded = vb_encode_posting_list(&original);
+        let decoded = vb_decode_posting_list(&encoded);
+
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_single_posting_multiple_positions() {
+        let original = vec![Posting {
+            doc_id: 100,
+            positions: vec![5, 12, 25, 30],
+        }];
+        let encoded = vb_encode_posting_list(&original);
+        let decoded = vb_decode_posting_list(&encoded);
+
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_single_posting_empty_positions() {
+        let original = vec![Posting {
+            doc_id: 15,
+            positions: vec![],
+        }];
+        let encoded = vb_encode_posting_list(&original);
+        let decoded = vb_decode_posting_list(&encoded);
+
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_multiple_postings_ascending_doc_ids() {
+        let original = vec![
+            Posting {
+                doc_id: 10,
+                positions: vec![1, 5],
+            },
+            Posting {
+                doc_id: 25,
+                positions: vec![2, 8, 12],
+            },
+            Posting {
+                doc_id: 50,
+                positions: vec![3],
+            },
+            Posting {
+                doc_id: 100,
+                positions: vec![1, 4, 7, 10],
+            },
+        ];
+        let encoded = vb_encode_posting_list(&original);
+        let decoded = vb_decode_posting_list(&encoded);
+
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_large_doc_ids() {
+        let original = vec![
+            Posting {
+                doc_id: 1000000,
+                positions: vec![1],
+            },
+            Posting {
+                doc_id: 2000000,
+                positions: vec![5, 10],
+            },
+            Posting {
+                doc_id: 4294967295,
+                positions: vec![2],
+            }, // Max u32
+        ];
+        let encoded = vb_encode_posting_list(&original);
+        let decoded = vb_decode_posting_list(&encoded);
+
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_large_position_values() {
+        let original = vec![Posting {
+            doc_id: 1,
+            positions: vec![1000000, 2000000, 4294967295],
+        }];
+        let encoded = vb_encode_posting_list(&original);
+        let decoded = vb_decode_posting_list(&encoded);
+
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_many_positions() {
+        let positions: Vec<u32> = (1..=1000).collect();
+        let original = vec![Posting {
+            doc_id: 42,
+            positions,
+        }];
+        let encoded = vb_encode_posting_list(&original);
+        let decoded = vb_decode_posting_list(&encoded);
+
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_consecutive_doc_ids() {
+        let original = vec![
+            Posting {
+                doc_id: 1,
+                positions: vec![1],
+            },
+            Posting {
+                doc_id: 2,
+                positions: vec![2],
+            },
+            Posting {
+                doc_id: 3,
+                positions: vec![3],
+            },
+            Posting {
+                doc_id: 4,
+                positions: vec![4],
+            },
+            Posting {
+                doc_id: 5,
+                positions: vec![5],
+            },
+        ];
+        let encoded = vb_encode_posting_list(&original);
+        let decoded = vb_decode_posting_list(&encoded);
+
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_mixed_position_counts() {
+        let original = vec![
+            Posting {
+                doc_id: 5,
+                positions: vec![],
+            },
+            Posting {
+                doc_id: 10,
+                positions: vec![1],
+            },
+            Posting {
+                doc_id: 20,
+                positions: vec![1, 2],
+            },
+            Posting {
+                doc_id: 30,
+                positions: vec![1, 2, 3],
+            },
+            Posting {
+                doc_id: 40,
+                positions: vec![],
+            },
+            Posting {
+                doc_id: 50,
+                positions: vec![10, 20, 30, 40, 50],
+            },
+        ];
+        let encoded = vb_encode_posting_list(&original);
+        let decoded = vb_decode_posting_list(&encoded);
+
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_large_doc_id_differences() {
+        let original = vec![
+            Posting {
+                doc_id: 1,
+                positions: vec![1],
+            },
+            Posting {
+                doc_id: 1000000,
+                positions: vec![2],
+            },
+            Posting {
+                doc_id: 2000000,
+                positions: vec![3],
+            },
+        ];
+        let encoded = vb_encode_posting_list(&original);
+        let decoded = vb_decode_posting_list(&encoded);
+
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_empty_bytes() {
+        let empty_bytes: Vec<u8> = Vec::new();
+        let decoded = vb_decode_posting_list(&empty_bytes);
+
+        assert_eq!(decoded, Vec::<Posting>::new());
+    }
 }

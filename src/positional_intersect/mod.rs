@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::{dictionary::Posting, search_engine::PostingOffset};
+use crate::{dictionary::Posting};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProximityMatch {

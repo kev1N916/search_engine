@@ -1,4 +1,4 @@
-use std::env;
+use std::{env, io};
 // A custom error type to represent our possible errors
 #[derive(Debug)]
 pub enum TokenizationError {
@@ -46,7 +46,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
-pub fn parse_lemma(file_path: &str) -> Result<HashMap<String, String>, TokenizationError> {
+pub fn parse_lemma(file_path: &str) -> Result<HashMap<String, String>, io::Error> {
     let file = File::open(file_path)?;
     let reader = BufReader::new(file);
 
@@ -103,8 +103,8 @@ pub struct TokenizeQueryResult {
     pub bigram: Vec<Token>,
 }
 impl SearchTokenizer {
-    pub fn new() -> Result<SearchTokenizer, TokenizationError> {
-        let current_dir = env::current_dir().unwrap();
+    pub fn new() -> Result<SearchTokenizer, io::Error> {
+        let current_dir = env::current_dir()?;
         let path_as_string = format!("{}", current_dir.display());
         let mut path = path_as_string.to_string();
         path += "/src";
@@ -172,9 +172,9 @@ impl SearchTokenizer {
         })
     }
 
-    pub fn tokenize(&self, sentences: String) -> Result<Vec<Token>, TokenizationError> {
+    pub fn tokenize(&self, sentences: String) -> Vec<Token> {
         if sentences.trim().is_empty() {
-            return Err(TokenizationError::EmptyInput);
+            return Vec::new();
         }
 
         let mut tokens = Vec::new();
@@ -217,7 +217,7 @@ impl SearchTokenizer {
             position = position + 1;
         }
 
-        Ok(tokens)
+        tokens
     }
 }
 
@@ -236,34 +236,6 @@ mod tests {
         assert!(result.is_ok(), "Should successfully create tokenizer");
     }
 
-    #[test]
-    fn test_empty_input() {
-        let tokenizer = create_test_tokenizer();
-        let result = tokenizer.tokenize(String::new());
-        assert!(matches!(result, Err(TokenizationError::EmptyInput)));
-    }
-
-    #[test]
-    fn test_whitespace_only_input() {
-        let tokenizer = create_test_tokenizer();
-        let mut input = String::new();
-        input.push_str("   \t\n  ");
-        let result = tokenizer.tokenize(input);
-        assert!(matches!(result, Err(TokenizationError::EmptyInput)));
-    }
-
-    #[test]
-    fn test_single_word() {
-        let tokenizer = create_test_tokenizer();
-        let input = "my name is Kevin. what the fuck am i doing??".to_string();
-        let result = tokenizer
-            .tokenize(input)
-            .expect("Should tokenize successfully");
-        // assert_eq!(result.len(), 10);
-        for token in result {
-            println!("{} m  m {}", token.position, token.word);
-        }
-    }
 
     // #[test]
     // fn test_multiple_words() {

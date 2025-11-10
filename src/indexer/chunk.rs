@@ -52,7 +52,7 @@ impl Chunk {
         chunk_bytes
     }
 
-    pub fn get_posting_list(&mut self,index:u32)->Vec<u32>{
+    pub fn get_posting_list(& self,index:u32)->Vec<u32>{
        
        let mut posting_list: &[u8] = &[];
         let mut current_index=0;
@@ -63,13 +63,15 @@ impl Chunk {
                 j+=1;
             }
             posting_list=&self.positions[i as usize..j as usize];
-            i=j;
+            i=j+1;
             current_index+=1;
         }
+        println!("{:?}",posting_list);
         vb_decode_positions(posting_list)
     }
 
     pub fn decode(&mut self, chunk_bytes: &[u8]) {
+        print!("{:?}",chunk_bytes);
         self.size_of_chunk = (4 + chunk_bytes.len()) as u32;
         let mut offset = 0;
         let max_doc_id = u32::from_le_bytes(chunk_bytes[offset..offset + 4].try_into().unwrap());
@@ -86,7 +88,7 @@ impl Chunk {
             index += 1;
         }
         self.doc_ids = chunk_bytes[offset..index].to_vec();
-        self.positions = chunk_bytes[index..].to_vec();
+        self.positions = chunk_bytes[index+1..].to_vec();
     }
     pub fn add_encoded_doc_id(&mut self, doc_id: u32, encoded_doc_id: Vec<u8>) {
         self.last_doc_id = doc_id;
@@ -108,7 +110,7 @@ impl Chunk {
     }
 
     pub fn set_max_doc_id(&mut self, doc_id: u32) {
-        let _ = self.max_doc_id.max(doc_id);
+        self.max_doc_id = self.max_doc_id.max(doc_id);
     }
 }
 

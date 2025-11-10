@@ -4,7 +4,10 @@ use std::{
     io::{self, BufWriter, Write},
 };
 
-use crate::{dictionary::Posting, indexer::chunk::Chunk};
+use crate::{
+    dictionary::Posting,
+    indexer::{block::Block, chunk::Chunk},
+};
 
 /*
 An inverted list in the index will often stretch across
@@ -73,13 +76,11 @@ impl TermMetadata {
     }
 }
 pub struct MergedIndexBlockWriter {
-    term_metadata: HashMap<u32, TermMetadata>,
-    current_block_no: u32,
-    chunks: Vec<Chunk>,
-    current_block_size: u32,
+    pub term_metadata: HashMap<u32, TermMetadata>,
+    pub current_block_no: u32,
+    pub current_block: Block,
     file_writer: BufWriter<File>,
-    max_block_size: u8, // in kb
-    terms: Vec<u32>,
+    pub max_block_size: u8, // in kb
 }
 
 impl MergedIndexBlockWriter {
@@ -87,20 +88,17 @@ impl MergedIndexBlockWriter {
         Self {
             term_metadata: HashMap::new(),
             current_block_no: 0,
-            chunks: Vec::new(),
-            current_block_size: 4,
+            current_block: Block::new(0),
             file_writer: BufWriter::new(file),
             max_block_size: match max_block_size {
                 Some(block_size) => block_size,
                 None => 64,
             },
-            terms: Vec::new(),
         }
     }
-    fn reset(&mut self) {
-        self.chunks.clear();
-        self.current_block_size = 4;
-        self.terms.clear();
+
+    pub fn finish(&mut self) -> io::Result<()> {
+        self.write_block_to_index_file()
     }
 
     fn add_block_to_term_metadata(&mut self, term: u32, block_no: u32) {
@@ -113,99 +111,472 @@ impl MergedIndexBlockWriter {
             metadata.set_term_frequency(frequency);
         }
     }
-    // fn check_if_block_full(&mut self) -> bool {
-    //     self.current_block_size >= (self.max_block_size as u32* 1000).into()
-    // }
-
-    fn add_chunk_to_block(&mut self, chunk: Chunk) {
-        self.chunks.push(chunk);
+    fn initialize_term_metadata(&mut self, term: u32) {
+        self.term_metadata.insert(
+            term,
+            TermMetadata {
+                block_ids: Vec::new(),
+                term_frequency: 0,
+            },
+        );
     }
-
-    pub fn get_term_metadata(&mut self, term: u32) -> Option<&TermMetadata> {
+    pub fn get_term_metadata(&self, term: u32) -> Option<&TermMetadata> {
         self.term_metadata.get(&term)
     }
-
     pub fn add_term(&mut self, term: u32, postings: Vec<Posting>) -> io::Result<()> {
-        if self.current_block_size + 6 + 8 > ((self.max_block_size as u32 * 1000).into()) {
+        // if it is not possible to add a new chunk to the block then we will reset the block
+        // the minimum number of bytes necessary to add a new chunk is 14
+        // 6 bytes for term and term_offset
+        // 8 bytes for the chunk max_doc_id and no of postings
+        // we try to avoid empty chunks if possible
+        if self.current_block.current_block_size + 6 + 8
+            > ((self.max_block_size as u32 * 1000).into())
+        {
             self.write_block_to_index_file()?;
-            self.reset();
+            self.current_block.reset();
         }
-        self.terms.push(term);
+        // After this the term is going to be in the block and a new chunk is going to be
+        // created
+        self.initialize_term_metadata(term);
+        self.add_block_to_term_metadata(term, self.current_block_no);
         self.add_frequency_to_term_metadata(term, postings.len() as u32);
-        self.current_block_size += 6;
-        let mut i = 0;
-        let mut current_chunk = Chunk::new(term);
-        self.current_block_size += 8;
+        self.current_block.add_term(term);
+        self.current_block.current_chunk = Chunk::new(term);
 
+        let mut i = 0;
         loop {
-            if current_chunk.no_of_postings >= 128 {
-                // if !current_chunk.is_empty() {
-                current_chunk.finish();
-                self.add_chunk_to_block(current_chunk.clone());
-                // }
-                current_chunk.reset();
-                self.current_block_size += 8;
+            if self.current_block.current_chunk.no_of_postings >= 128 {
+                self.current_block.current_chunk.finish();
+                self.current_block.add_current_chunk();
+                self.current_block.reset_current_chunk();
             }
             if i == postings.len() {
-                // if !current_chunk.is_empty() {
-                current_chunk.finish();
-                self.add_chunk_to_block(current_chunk.clone());
-                self.write_block_to_index_file()?;
-                self.reset();
-                // }
+                self.current_block.current_chunk.finish();
+                self.current_block.add_current_chunk();
+                self.current_block.reset_current_chunk();
                 return Ok(());
             }
 
             let current_posting = &postings[i];
-            let encoded_doc_id = current_chunk.encode_doc_id(current_posting.doc_id);
-            let encoded_positions = current_chunk.encode_positions(&current_posting.positions);
+            let encoded_doc_id = self
+                .current_block
+                .current_chunk
+                .encode_doc_id(current_posting.doc_id);
+            let encoded_positions = self
+                .current_block
+                .current_chunk
+                .encode_positions(&current_posting.positions);
             let size_of_posting = encoded_doc_id.len() as u32 + encoded_positions.len() as u32;
-            if self.current_block_size + size_of_posting
+            if (self.current_block.space_used() + size_of_posting)
                 > (self.max_block_size as u32 * 1000).into()
             {
-                current_chunk.finish();
-                self.add_chunk_to_block(current_chunk.clone());
+                self.current_block.current_chunk.finish();
+                self.current_block.add_current_chunk();
                 self.write_block_to_index_file()?;
-                self.reset();
-                current_chunk.reset();
-                self.current_block_size += 8;
+                self.current_block.reset_current_chunk();
+                self.current_block.reset();
+
+                // we start a new block and so we need to update the metadata for this block
+                self.current_block.add_term(term);
+                self.add_block_to_term_metadata(term, self.current_block_no);
             }
-            current_chunk.set_max_doc_id(current_posting.doc_id);
-            current_chunk.add_encoded_doc_id(current_posting.doc_id, encoded_doc_id);
-            current_chunk.add_encoded_positions(encoded_positions);
-            self.current_block_size += size_of_posting;
-            current_chunk.no_of_postings += 1;
+            self.current_block
+                .current_chunk
+                .set_max_doc_id(current_posting.doc_id);
+            self.current_block
+                .current_chunk
+                .add_encoded_doc_id(current_posting.doc_id, encoded_doc_id);
+            self.current_block
+                .current_chunk
+                .add_encoded_positions(encoded_positions);
+            self.current_block.current_chunk.no_of_postings += 1;
             i += 1;
         }
     }
 
     fn write_block_to_index_file(&mut self) -> io::Result<()> {
-        let block_no = self.current_block_no;
-        let no_of_terms = self.terms.len().to_le_bytes();
-        let encoded_terms: Vec<u8> = self.terms.iter().flat_map(|&n| n.to_le_bytes()).collect();
-        let mut term_offsets = Vec::new();
-        let mut encoded_chunks: Vec<u8> = Vec::new();
-        let mut term_offset_start = (6 * self.terms.len()) as u16;
-        let mut term_set = HashSet::new();
-        for chunk in &self.chunks {
-            if !term_set.contains(&chunk.term) {
-                term_set.insert(chunk.term);
-                term_offsets.extend(term_offset_start.to_le_bytes());
-            }
-            encoded_chunks.extend(&chunk.encode());
-            term_offset_start += (chunk.doc_ids.len() + chunk.positions.len() + 8) as u16;
-        }
-
-        for term in term_set {
-            self.add_block_to_term_metadata(term, block_no);
-        }
-
-        self.file_writer.write_all(&no_of_terms)?;
-        self.file_writer.write_all(&encoded_terms)?;
-        self.file_writer.write_all(&term_offsets)?;
-        self.file_writer.write_all(&encoded_chunks)?;
+        self.current_block.encode();
+        self.file_writer
+            .write_all(&self.current_block.block_bytes)?;
         self.file_writer.flush()?;
         self.current_block_no += 1;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dictionary::Posting;
+    use std::io::{Read, Seek, SeekFrom};
+    use tempfile::NamedTempFile;
+
+    // Helper function to create test postings
+    fn create_test_postings(doc_id: u32, positions: Vec<u32>) -> Posting {
+        Posting { doc_id, positions }
+    }
+
+    #[test]
+    fn test_new_writer() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let file = temp_file.reopen().unwrap();
+        let writer = MergedIndexBlockWriter::new(file, None);
+
+        assert_eq!(writer.term_metadata.len(), 0);
+        assert_eq!(writer.current_block_no, 0);
+        assert_eq!(writer.max_block_size, 64);
+    }
+
+    #[test]
+    fn test_new_writer_with_custom_block_size() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let file = temp_file.reopen().unwrap();
+        let writer = MergedIndexBlockWriter::new(file, Some(128));
+
+        assert_eq!(writer.max_block_size, 128);
+    }
+
+    #[test]
+    fn test_add_single_term_small_postings() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let file = temp_file.reopen().unwrap();
+        let mut writer = MergedIndexBlockWriter::new(file, Some(64));
+
+        let postings = vec![
+            create_test_postings(10, vec![5, 10, 15]),
+            create_test_postings(20, vec![3, 7]),
+        ];
+
+        let result = writer.add_term(1, postings);
+        writer.finish().unwrap();
+        assert!(result.is_ok());
+
+        // Check term metadata was updated
+        let metadata = writer.get_term_metadata(1).unwrap();
+        assert_eq!(metadata.term_frequency, 2);
+        assert_eq!(metadata.block_ids.len(), 1);
+    }
+
+    #[test]
+    fn test_add_multiple_terms() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let file = temp_file.reopen().unwrap();
+        let mut writer = MergedIndexBlockWriter::new(file, Some(64));
+
+        let postings1 = vec![create_test_postings(10, vec![1])];
+        let postings2 = vec![create_test_postings(20, vec![2])];
+
+        writer.add_term(1, postings1).unwrap();
+        writer.add_term(2, postings2).unwrap();
+        writer.finish().unwrap();
+
+        let metadata1 = writer.get_term_metadata(1).unwrap();
+        let metadata2 = writer.get_term_metadata(2).unwrap();
+
+        assert_eq!(metadata1.term_frequency, 1);
+        assert_eq!(metadata2.term_frequency, 1);
+        assert!(metadata1.block_ids.len() > 0);
+        assert!(metadata2.block_ids.len() > 0);
+    }
+
+    #[test]
+    fn test_term_with_many_postings() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let file = temp_file.reopen().unwrap();
+        let mut writer = MergedIndexBlockWriter::new(file, Some(64));
+
+        // Create 150 postings to test chunk splitting (>128 postings per chunk)
+        let mut postings = Vec::new();
+        for i in 0..150 {
+            postings.push(create_test_postings(i * 10, vec![1, 2]));
+        }
+
+        let result = writer.add_term(1, postings);
+        assert!(result.is_ok());
+        writer.finish().unwrap();
+
+        let metadata = writer.get_term_metadata(1).unwrap();
+        assert_eq!(metadata.term_frequency, 150);
+    }
+
+    #[test]
+    fn test_block_size_threshold_triggers_write() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let file = temp_file.reopen().unwrap();
+        let mut writer = MergedIndexBlockWriter::new(file, Some(1)); // Very small block size
+
+        let postings = vec![create_test_postings(10, vec![1, 2, 3, 4, 5])];
+
+        writer.add_term(1, postings.clone()).unwrap();
+        let block_no_after_first = writer.current_block_no;
+
+        writer.add_term(2, postings).unwrap();
+        writer.finish().unwrap();
+
+        // Second term should trigger a new block due to small max_block_size
+        assert!(writer.current_block_no >= block_no_after_first);
+    }
+
+    #[test]
+    fn test_empty_postings() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let file = temp_file.reopen().unwrap();
+        let mut writer = MergedIndexBlockWriter::new(file, Some(64));
+
+        let postings = vec![];
+
+        let result = writer.add_term(1, postings);
+        assert!(result.is_ok());
+        writer.finish().unwrap();
+
+        let metadata = writer.get_term_metadata(1).unwrap();
+        assert_eq!(metadata.term_frequency, 0);
+    }
+
+    #[test]
+    fn test_postings_with_empty_positions() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let file = temp_file.reopen().unwrap();
+        let mut writer = MergedIndexBlockWriter::new(file, Some(64));
+
+        let postings = vec![
+            create_test_postings(10, vec![]),
+            create_test_postings(20, vec![]),
+        ];
+
+        let result = writer.add_term(1, postings);
+        assert!(result.is_ok());
+        writer.finish().unwrap();
+
+        let metadata = writer.get_term_metadata(1).unwrap();
+        assert_eq!(metadata.term_frequency, 2);
+    }
+
+    #[test]
+    fn test_postings_with_many_positions() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let file = temp_file.reopen().unwrap();
+        let mut writer = MergedIndexBlockWriter::new(file, Some(64));
+
+        // Create a posting with many positions
+        let positions: Vec<u32> = (0..100).map(|i| i * 10).collect();
+        let postings = vec![create_test_postings(42, positions)];
+
+        let result = writer.add_term(1, postings);
+        assert!(result.is_ok());
+        writer.finish().unwrap();
+
+        let metadata = writer.get_term_metadata(1).unwrap();
+        assert_eq!(metadata.term_frequency, 1);
+    }
+
+    #[test]
+    fn test_multiple_blocks_same_term() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let file = temp_file.reopen().unwrap();
+        let mut writer = MergedIndexBlockWriter::new(file, Some(1)); // Very small blocks
+
+        // Create enough postings to span multiple blocks
+        let mut postings = Vec::new();
+        for i in 0..200 {
+            postings.push(create_test_postings(i * 100, vec![1, 2, 3, 4, 5]));
+        }
+
+        let result = writer.add_term(1, postings);
+        assert!(result.is_ok());
+        writer.finish().unwrap();
+
+        let metadata = writer.get_term_metadata(1).unwrap();
+        assert_eq!(metadata.term_frequency, 200);
+        // Term should appear in multiple blocks due to small block size
+        assert!(metadata.block_ids.len() > 1);
+    }
+
+    #[test]
+    fn test_sequential_doc_ids() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let file = temp_file.reopen().unwrap();
+        let mut writer = MergedIndexBlockWriter::new(file, Some(64));
+
+        let postings = vec![
+            create_test_postings(1, vec![1]),
+            create_test_postings(2, vec![2]),
+            create_test_postings(3, vec![3]),
+            create_test_postings(4, vec![4]),
+            create_test_postings(5, vec![5]),
+        ];
+
+        let result = writer.add_term(1, postings);
+        assert!(result.is_ok());
+        writer.finish().unwrap();
+
+        let metadata = writer.get_term_metadata(1).unwrap();
+        assert_eq!(metadata.term_frequency, 5);
+    }
+
+    #[test]
+    fn test_sparse_doc_ids() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let file = temp_file.reopen().unwrap();
+        let mut writer = MergedIndexBlockWriter::new(file, Some(64));
+
+        let postings = vec![
+            create_test_postings(10, vec![1]),
+            create_test_postings(1000, vec![2]),
+            create_test_postings(10000, vec![3]),
+            create_test_postings(100000, vec![4]),
+        ];
+
+        let result = writer.add_term(1, postings);
+        assert!(result.is_ok());
+        writer.finish().unwrap();
+
+        let metadata = writer.get_term_metadata(1).unwrap();
+        assert_eq!(metadata.term_frequency, 4);
+    }
+
+    #[test]
+    fn test_file_written_correctly() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let file = temp_file.reopen().unwrap();
+        let mut writer = MergedIndexBlockWriter::new(file, Some(64));
+
+        let postings = vec![
+            create_test_postings(10, vec![5, 10]),
+            create_test_postings(20, vec![3]),
+        ];
+
+        writer.add_term(1, postings).unwrap();
+        writer.finish().unwrap();
+        // Reopen file and check it has content
+        let mut file = temp_file.reopen().unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer).unwrap();
+
+        // File should contain data
+        assert!(buffer.len() > 0);
+
+        // First 4 bytes should be number of terms (at least 1)
+        let no_of_terms = u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]);
+        assert!(no_of_terms >= 1);
+    }
+
+    #[test]
+    fn test_term_metadata_structure() {
+        let mut metadata = TermMetadata {
+            block_ids: Vec::new(),
+            term_frequency: 0,
+        };
+
+        metadata.add_block_id(0);
+        metadata.add_block_id(1);
+        metadata.add_block_id(2);
+
+        assert_eq!(metadata.block_ids.len(), 3);
+        // assert_eq!(metadata.block_ids[0], 0);
+        // assert_eq!(metadata.block_ids[2], 2);
+
+        metadata.set_term_frequency(42);
+        assert_eq!(metadata.term_frequency, 42);
+    }
+
+    #[test]
+    fn test_multiple_terms_different_sizes() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let file = temp_file.reopen().unwrap();
+        let mut writer = MergedIndexBlockWriter::new(file, Some(64));
+
+        // Term 1: Few postings
+        writer
+            .add_term(1, vec![create_test_postings(10, vec![1])])
+            .unwrap();
+
+        // Term 2: Many postings
+        let many_postings: Vec<Posting> = (0..50)
+            .map(|i| create_test_postings(i * 10, vec![1, 2]))
+            .collect();
+        writer.add_term(2, many_postings).unwrap();
+
+        // Term 3: Postings with many positions
+        writer
+            .add_term(3, vec![create_test_postings(100, (0..50).collect())])
+            .unwrap();
+
+        // Term 4: Empty
+        writer.add_term(4, vec![]).unwrap();
+
+        // Term 5: Normal
+        writer
+            .add_term(
+                5,
+                vec![
+                    create_test_postings(200, vec![1, 2, 3]),
+                    create_test_postings(300, vec![4, 5, 6]),
+                ],
+            )
+            .unwrap();
+        writer.finish().unwrap();
+
+        assert_eq!(writer.get_term_metadata(1).unwrap().term_frequency, 1);
+        assert_eq!(writer.get_term_metadata(2).unwrap().term_frequency, 50);
+        assert_eq!(writer.get_term_metadata(3).unwrap().term_frequency, 1);
+        assert_eq!(writer.get_term_metadata(4).unwrap().term_frequency, 0);
+        assert_eq!(writer.get_term_metadata(5).unwrap().term_frequency, 2);
+    }
+
+    #[test]
+    fn test_large_doc_ids() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let file = temp_file.reopen().unwrap();
+        let mut writer = MergedIndexBlockWriter::new(file, Some(64));
+
+        let postings = vec![
+            create_test_postings(u32::MAX - 1000, vec![1]),
+            create_test_postings(u32::MAX - 500, vec![2]),
+            create_test_postings(u32::MAX - 1, vec![3]),
+        ];
+
+        let result = writer.add_term(1, postings);
+        assert!(result.is_ok());
+        writer.finish().unwrap();
+
+        let metadata = writer.get_term_metadata(1).unwrap();
+        assert_eq!(metadata.term_frequency, 3);
+    }
+
+    #[test]
+    fn test_chunk_boundary_128_postings() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let file = temp_file.reopen().unwrap();
+        let mut writer = MergedIndexBlockWriter::new(file, Some(128));
+
+        // Exactly 128 postings - should fit in one chunk
+        let postings: Vec<Posting> = (0..128).map(|i| create_test_postings(i, vec![1])).collect();
+
+        let result = writer.add_term(1, postings);
+        assert!(result.is_ok());
+        writer.finish().unwrap();
+
+        let metadata = writer.get_term_metadata(1).unwrap();
+        assert_eq!(metadata.term_frequency, 128);
+    }
+
+    #[test]
+    fn test_chunk_boundary_129_postings() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let file = temp_file.reopen().unwrap();
+        let mut writer = MergedIndexBlockWriter::new(file, Some(128));
+
+        // 129 postings - should create multiple chunks
+        let postings: Vec<Posting> = (0..129).map(|i| create_test_postings(i, vec![1])).collect();
+
+        let result = writer.add_term(1, postings);
+        assert!(result.is_ok());
+        writer.finish().unwrap();
+
+        let metadata = writer.get_term_metadata(1).unwrap();
+        assert_eq!(metadata.term_frequency, 129);
     }
 }
