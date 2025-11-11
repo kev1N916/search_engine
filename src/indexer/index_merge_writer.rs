@@ -158,7 +158,7 @@ impl MergedIndexBlockWriter {
             }
 
             let current_posting = &postings[i];
-            let encoded_doc_id = self
+            let mut encoded_doc_id = self
                 .current_block
                 .current_chunk
                 .encode_doc_id(current_posting.doc_id);
@@ -179,7 +179,12 @@ impl MergedIndexBlockWriter {
                 // we start a new block and so we need to update the metadata for this block
                 self.current_block.add_term(term);
                 self.add_block_to_term_metadata(term, self.current_block_no);
+                encoded_doc_id = self
+                    .current_block
+                    .current_chunk
+                    .encode_doc_id(current_posting.doc_id);
             }
+
             self.current_block
                 .current_chunk
                 .set_max_doc_id(current_posting.doc_id);

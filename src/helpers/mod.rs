@@ -226,3 +226,57 @@
 //         doc_lengths: doc_lengths_final,
 //     }))
 // }
+
+
+
+// fn read_block_from_disk(filename: &str) -> Result<Dictionary, std::io::Error> {
+//     let file = File::open(filename)?;
+//     let mut reader = BufReader::new(file);
+
+//     // Read total number of terms
+//     let mut term_count_bytes = [0u8; 4];
+//     reader.read_exact(&mut term_count_bytes)?;
+//     let term_count = u32::from_le_bytes(term_count_bytes) as usize;
+
+//     let mut dict = Dictionary::new();
+//     for _ in 0..term_count {
+//         match read_term_from_disk(&mut reader) {
+//             Ok((term, posting_list)) => {
+//                 dict.add_term_posting(&term, posting_list);
+//             }
+//             Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break, // End of file
+//             Err(e) => return Err(e),
+//         }
+//     }
+
+//     Ok(dict)
+// }
+
+// fn read_term_from_disk(
+//     reader: &mut BufReader<File>,
+// ) -> Result<(String, Vec<Posting>), std::io::Error> {
+//     // Read term length
+//     let mut term_len_bytes = [0u8; 4];
+//     reader.read_exact(&mut term_len_bytes)?;
+//     let term_len = u32::from_le_bytes(term_len_bytes) as usize;
+
+//     // Read term
+//     let mut term_bytes = vec![0u8; term_len];
+//     reader.read_exact(&mut term_bytes)?;
+//     let term = String::from_utf8(term_bytes)
+//         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+//     // Read encoded posting list length
+//     let mut posting_list_len_bytes = [0u8; 4];
+//     reader.read_exact(&mut posting_list_len_bytes)?;
+//     let posting_list_len = u32::from_le_bytes(posting_list_len_bytes) as usize;
+
+//     // Read encoded posting list
+//     let mut encoded_posting_list = vec![0u8; posting_list_len];
+//     reader.read_exact(&mut encoded_posting_list)?;
+
+//     // Decode posting list
+//     let posting_list = vb_decode_posting_list(&encoded_posting_list);
+
+//     Ok((term, posting_list))
+// }

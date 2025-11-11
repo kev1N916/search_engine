@@ -1,15 +1,15 @@
 use std::{
     collections::HashMap,
     fs::{self, File},
-    io::{self, BufReader, Read},
+    io::{self, BufReader},
     path::Path,
-    sync::mpsc::{self, Receiver, Sender},
+    sync::mpsc::{self},
 };
 
 use crate::{
     dictionary::{Posting, Term},
-    in_memory_dict::map_in_memory_dict::MapInMemoryDict,
-    indexer::spimi::Spmi,
+    in_memory_dict::map_in_memory_dict::{MapInMemoryDict, MapInMemoryDictPointer},
+    indexer::{index_metadata::InMemoryIndexMetatdata, spimi::Spmi},
     my_bk_tree::BkTree,
     query_parser::tokenizer::SearchTokenizer,
 };
@@ -41,8 +41,17 @@ impl IndexMetadata {
     }
     pub fn add_term(term: String) {}
 }
+
+#[derive(Clone, Debug)]
+pub struct DocumentMetadata {
+    pub doc_name: String,
+    pub doc_url: String,
+    pub doc_length: u32,
+}
 pub struct Indexer {
     doc_id: u32,
+    document_metadata: HashMap<u32, DocumentMetadata>,
+    index_metadata: InMemoryIndexMetatdata,
     index_directory_path: String,
     search_tokenizer: SearchTokenizer,
 }
@@ -60,10 +69,12 @@ fn extract_plaintext(text: &Vec<Vec<String>>) -> String {
     tag_regex.replace_all(&full_text, "").to_string()
 }
 impl Indexer {
-    pub fn new() -> Result<Self, std::io::Error> {
-        let search_tokenizer = SearchTokenizer::new()?;
+    pub fn new(search_tokenizer: SearchTokenizer) -> Result<Self, std::io::Error> {
+        // let search_tokenizer = SearchTokenizer::new()?;
         Ok(Self {
             doc_id: 0,
+            document_metadata: HashMap::new(),
+            index_metadata: InMemoryIndexMetatdata::new(),
             // term_sender: tx,
             // term_receiver: rx,
             index_directory_path: String::new(),
@@ -71,11 +82,14 @@ impl Indexer {
         })
     }
 
+    pub fn get_no_of_docs(&self) -> u32 {
+        self.doc_id
+    }
     fn read_bz2_file(
         &mut self,
         path: &Path,
-        tx:&mpsc::Sender<Term>,
-    ) -> Result<Vec<WikiArticle>, Box<dyn std::error::Error>> {
+        tx: &mpsc::Sender<Term>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let file = File::open(path)?;
         let decoder = BzDecoder::new(file);
         let reader = BufReader::new(decoder);
@@ -83,15 +97,24 @@ impl Indexer {
         // Create a streaming deserializer
         let stream = serde_json::Deserializer::from_reader(reader).into_iter::<WikiArticle>();
 
-        let mut articles = Vec::new();
+        // let mut articles = Vec::new();
 
         for (i, result) in stream.enumerate() {
             match result {
                 Ok(article) => {
+                    self.doc_id += 1;
+
                     let plain_text = extract_plaintext(&article.text);
                     let tokens = self.search_tokenizer.tokenize(plain_text);
-
-                    articles.push(article);
+                    self.document_metadata.insert(
+                        self.doc_id,
+                        DocumentMetadata {
+                            doc_name: article.title,
+                            doc_url: article.url,
+                            doc_length: tokens.len() as u32,
+                        },
+                    );
+                    // articles.push(article);
                     let mut doc_postings: HashMap<String, Vec<u32>> = HashMap::new();
                     for token in &tokens {
                         doc_postings
@@ -100,7 +123,6 @@ impl Indexer {
                             .push(token.position);
                     }
                     for (key, value) in doc_postings {
-                        self.doc_id += 1;
                         let term = Term {
                             posting: Posting {
                                 doc_id: self.doc_id,
@@ -118,7 +140,7 @@ impl Indexer {
             }
         }
 
-        Ok(articles)
+        Ok(())
     }
 
     fn scan_index_directory(&self, directory: &str) -> Result<Vec<File>, io::Error> {
@@ -143,7 +165,11 @@ impl Indexer {
         Ok(file_handles)
     }
 
-    fn process_directory(&mut self, dir_path: &Path,tx:&mpsc::Sender<Term>,) -> Result<u32, Box<dyn std::error::Error>> {
+    fn process_directory(
+        &mut self,
+        dir_path: &Path,
+        tx: &mpsc::Sender<Term>,
+    ) -> Result<u32, Box<dyn std::error::Error>> {
         let mut number_of_articles: u32 = 0;
 
         for entry in std::fs::read_dir(dir_path)? {
@@ -151,17 +177,10 @@ impl Indexer {
             let path = entry.path();
             if path.is_dir() {
                 // Recursively process subdirectories
-                number_of_articles += self.process_directory(&path,&tx)?;
+                number_of_articles += self.process_directory(&path, &tx)?;
             } else if path.extension().and_then(|s| s.to_str()) == Some("bz2") {
                 println!("Processing: {:?}", path);
-                let pages = self.read_bz2_file(&path,tx)?;
-
-                for page in pages {
-                    number_of_articles += 1;
-                    println!("ID: {}, Title: {}", page.id, page.title);
-                    // println!("Content: {}",page.text)
-                    // Process each page as needed
-                }
+                self.read_bz2_file(&path, tx)?;
             }
         }
 
@@ -180,9 +199,17 @@ impl Indexer {
         });
 
         let wiki_dir = Path::new("enwiki-20171001-pages-meta-current-withlinks-processed");
-        let _=self.process_directory(wiki_dir,&tx);
+        let _ = self.process_directory(wiki_dir, &tx);
         drop(tx);
         handle.join().unwrap();
+
+        spmi = Spmi::new();
+        let result = spmi.merge_index_files(64).unwrap();
+        self.index_metadata = result;
         Ok(())
+    }
+
+    pub fn get_term_metadata(&self, term: &str) -> &MapInMemoryDictPointer {
+        self.index_metadata.get_term_metadata(term)
     }
 }

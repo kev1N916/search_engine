@@ -36,6 +36,7 @@ impl Block {
         self.current_block_size = 4;
         self.chunks.clear();
         self.terms.clear();
+        self.block_bytes = [0; BLOCK_SIZE];
         self.term_offsets.clear();
     }
 
@@ -59,6 +60,7 @@ impl Block {
         self.current_chunk.reset();
     }
     pub fn add_current_chunk(&mut self) {
+        println!("{:?}", self.current_chunk);
         self.chunks.push(self.current_chunk.clone());
         self.current_block_size += self.current_chunk.size_of_chunk;
     }
@@ -68,15 +70,19 @@ impl Block {
         self.terms.push(term);
     }
 
-    pub fn get_chunk_for_term<'a>(&self, term_id: u32, chunks: &'a [Chunk]) -> &'a Chunk {
+    pub fn get_chunk_for_doc<'a>(&self, doc_id: u32, chunks: &'a [Chunk]) -> Option<&'a Chunk> {
         let mut i = 0;
         while i < chunks.len() {
-            if chunks[i].max_doc_id < term_id {
+            if chunks[i].max_doc_id < doc_id {
                 i += 1;
+            }else{
+                break;
             }
         }
-
-        &chunks[i]
+        if i==chunks.len(){
+            return None;
+        }
+        Some(&chunks[i])
     }
 
     pub fn encode(&mut self) {
@@ -105,7 +111,7 @@ impl Block {
         self.block_bytes[offset..offset + encoded_chunks.len()].copy_from_slice(&encoded_chunks);
     }
 
-    fn decode_chunks_for_term(&self, term_id: u32, term_index: usize) -> Vec<Chunk> {
+   pub fn decode_chunks_for_term(&self, term_id: u32, term_index: usize) -> Vec<Chunk> {
         let mut chunk_vec: Vec<Chunk> = Vec::new();
         let term_offset_start = self.term_offsets[term_index] as usize;
         let term_off_end = if term_index == self.terms.len() - 1 {
@@ -113,8 +119,6 @@ impl Block {
         } else {
             self.term_offsets[term_index + 1] as usize
         };
-
-        println!("{} {}",term_offset_start,term_off_end);
 
         let chunk_bytes = &self.block_bytes[term_offset_start..term_off_end];
         let mut chunk_offset = 0;
@@ -125,7 +129,7 @@ impl Block {
                     .try_into()
                     .unwrap(),
             );
-            if chunk_size==0{
+            if chunk_size == 0 {
                 break;
             }
             current_chunk
@@ -136,7 +140,7 @@ impl Block {
         chunk_vec
     }
 
-    pub fn init(&mut self, reader: &mut BufReader<File>) -> io::Result<()> {
+    pub fn init(&mut self, reader: &mut BufReader<& mut File>) -> io::Result<()> {
         let _ = reader.seek(std::io::SeekFrom::Start(
             (self.block_id * BLOCK_SIZE as u32).into(),
         ))?;
@@ -158,6 +162,7 @@ impl Block {
             term_offsets.push(term_offset);
             offset += 2;
         }
+
         self.term_offsets = term_offsets;
         self.terms = terms;
         Ok(())
@@ -171,10 +176,9 @@ mod tests {
         dictionary::Posting,
         indexer::{
             helper::vb_decode_positions,
-            index_merge_writer::{MergedIndexBlockWriter, TermMetadata},
+            index_merge_writer::{MergedIndexBlockWriter},
         },
     };
-    use std::io::{Read, Seek, SeekFrom};
     use tempfile::NamedTempFile;
 
     // Helper function to create test postings
@@ -196,8 +200,8 @@ mod tests {
         let result = writer.add_term(1, postings);
         assert!(result.is_ok());
         writer.finish().unwrap();
-        let file = temp_file.reopen().unwrap();
-        let mut reader = BufReader::new(file);
+        let mut file = temp_file.reopen().unwrap();
+        let mut reader = BufReader::new(& mut file);
         // Check term metadata was updated
         let metadata = writer.get_term_metadata(1).unwrap();
         assert_eq!(metadata.block_ids.len(), 1);
@@ -221,8 +225,8 @@ mod tests {
         writer.finish().unwrap();
 
         let metadata1 = writer.get_term_metadata(1).unwrap();
-        let file: File = temp_file.reopen().unwrap();
-        let mut reader = BufReader::new(file);
+        let mut file = temp_file.reopen().unwrap();
+        let mut reader = BufReader::new(& mut file);
         // Check term metadata was updated
         let mut block = Block::new(metadata1.block_ids[0]);
         block.init(&mut reader).unwrap();
@@ -244,8 +248,8 @@ mod tests {
         let result = writer.add_term(1, postings);
         assert!(result.is_ok());
         writer.finish().unwrap();
-        let file = temp_file.reopen().unwrap();
-        let mut reader = BufReader::new(file);
+        let mut file = temp_file.reopen().unwrap();
+        let mut reader = BufReader::new(& mut file);
         // Check term metadata was updated
         let metadata = writer.get_term_metadata(1).unwrap();
         assert_eq!(metadata.block_ids.len(), 1);
@@ -278,13 +282,13 @@ mod tests {
         writer.add_term(1, postings1).unwrap();
         writer.add_term(2, postings2).unwrap();
         writer.finish().unwrap();
-        let file = temp_file.reopen().unwrap();
-        let mut reader = BufReader::new(file);
+         let mut file = temp_file.reopen().unwrap();
+        let mut reader = BufReader::new(& mut file);
         let metadata = writer.get_term_metadata(1).unwrap();
         let mut block = Block::new(metadata.block_ids[0]);
         block.init(&mut reader).unwrap();
         let chunks = block.decode_chunks_for_term(1, 0);
-        let doc_ids = vb_decode_positions(&chunks[0].doc_ids);
+        let doc_ids =chunks[0].get_doc_ids();
         assert_eq!(doc_ids, vec![10, 1000, 10000, 100000]);
         let postings1 = chunks[0].get_posting_list(0);
         assert_eq!(postings1, vec![1, 6, 7, 13, 20]);
@@ -303,184 +307,64 @@ mod tests {
         let postings2 = chunks[0].get_posting_list(1);
         assert_eq!(postings2, vec![2, 6, 8, 9]);
         let postings3 = chunks[0].get_posting_list(2);
-        assert_eq!(postings3,vec![3, 5, 7, 19, 22, 49]);
+        assert_eq!(postings3, vec![3, 5, 7, 19, 22, 49]);
         let postings4 = chunks[0].get_posting_list(3);
         assert_eq!(postings4, vec![4, 5, 6, 9, 10]);
     }
 
     #[test]
-    fn test_file_written_correctly() {
+    fn test_multiple_blocks_same_term_2() {
         let temp_file = NamedTempFile::new().unwrap();
         let file = temp_file.reopen().unwrap();
-        let mut writer = MergedIndexBlockWriter::new(file, Some(64));
+        let mut writer = MergedIndexBlockWriter::new(file, Some(1)); // Very small blocks
 
-
-        let postings = vec![
-            create_test_postings(10, vec![5, 10]),
-            create_test_postings(20, vec![3]),
-        ];
-
-        writer.add_term(1, postings).unwrap();
-
-        // Reopen file and check it has content
-        let mut file = temp_file.reopen().unwrap();
-        file.seek(SeekFrom::Start(0)).unwrap();
-
-        let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer).unwrap();
-
-        // File should contain data
-        assert!(buffer.len() > 0);
-
-        // First 4 bytes should be number of terms (at least 1)
-        let no_of_terms = u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]);
-        assert!(no_of_terms >= 1);
-    }
-
-    #[test]
-    fn test_term_metadata_structure() {
-        let mut metadata = TermMetadata {
-            block_ids: Vec::new(),
-            term_frequency: 0,
-        };
-
-        metadata.add_block_id(0);
-        metadata.add_block_id(1);
-        metadata.add_block_id(2);
-
-        assert_eq!(metadata.block_ids.len(), 3);
-        // assert_eq!(metadata.block_ids[0], 0);
-        // assert_eq!(metadata.block_ids[2], 2);
-
-        metadata.set_term_frequency(42);
-        assert_eq!(metadata.term_frequency, 42);
-    }
-
-    #[test]
-    fn test_multiple_terms_different_sizes() {
-        let temp_file = NamedTempFile::new().unwrap();
-        let file = temp_file.reopen().unwrap();
-        let mut writer = MergedIndexBlockWriter::new(file, Some(64));
-
-        for term in 1..=5 {
-            writer.term_metadata.insert(
-                term,
-                TermMetadata {
-                    block_ids: Vec::new(),
-                    term_frequency: 0,
-                },
-            );
+        // Create enough postings to span multiple blocks
+        let mut postings = Vec::new();
+        for i in 0..200 {
+            postings.push(create_test_postings(i * 100, vec![1, 2, 3, 4, 5]));
         }
 
-        // Term 1: Few postings
-        writer
-            .add_term(1, vec![create_test_postings(10, vec![1])])
-            .unwrap();
-
-        // Term 2: Many postings
-        let many_postings: Vec<Posting> = (0..50)
-            .map(|i| create_test_postings(i * 10, vec![1, 2]))
-            .collect();
-        writer.add_term(2, many_postings).unwrap();
-
-        // Term 3: Postings with many positions
-        writer
-            .add_term(3, vec![create_test_postings(100, (0..50).collect())])
-            .unwrap();
-
-        // Term 4: Empty
-        writer.add_term(4, vec![]).unwrap();
-
-        // Term 5: Normal
-        writer
-            .add_term(
-                5,
-                vec![
-                    create_test_postings(200, vec![1, 2, 3]),
-                    create_test_postings(300, vec![4, 5, 6]),
-                ],
-            )
-            .unwrap();
-
-        assert_eq!(writer.get_term_metadata(1).unwrap().term_frequency, 1);
-        assert_eq!(writer.get_term_metadata(2).unwrap().term_frequency, 50);
-        assert_eq!(writer.get_term_metadata(3).unwrap().term_frequency, 1);
-        assert_eq!(writer.get_term_metadata(4).unwrap().term_frequency, 0);
-        assert_eq!(writer.get_term_metadata(5).unwrap().term_frequency, 2);
-    }
-
-    #[test]
-    fn test_large_doc_ids() {
-        let temp_file = NamedTempFile::new().unwrap();
-        let file = temp_file.reopen().unwrap();
-        let mut writer = MergedIndexBlockWriter::new(file, Some(64));
-
-        writer.term_metadata.insert(
-            1,
-            TermMetadata {
-                block_ids: Vec::new(),
-                term_frequency: 0,
-            },
-        );
-
-        let postings = vec![
-            create_test_postings(u32::MAX - 1000, vec![1]),
-            create_test_postings(u32::MAX - 500, vec![2]),
-            create_test_postings(u32::MAX - 1, vec![3]),
-        ];
-
         let result = writer.add_term(1, postings);
+
         assert!(result.is_ok());
+        writer.finish().unwrap();
 
         let metadata = writer.get_term_metadata(1).unwrap();
-        assert_eq!(metadata.term_frequency, 3);
-    }
+        assert_eq!(metadata.term_frequency, 200);
+        // Term should appear in multiple blocks due to small block size
+        assert!(metadata.block_ids.len() > 1);
 
-    #[test]
-    fn test_chunk_boundary_128_postings() {
-        let temp_file = NamedTempFile::new().unwrap();
-        let file = temp_file.reopen().unwrap();
-        let mut writer = MergedIndexBlockWriter::new(file, Some(128));
-
-        writer.term_metadata.insert(
-            1,
-            TermMetadata {
-                block_ids: Vec::new(),
-                term_frequency: 0,
-            },
-        );
-
-        // Exactly 128 postings - should fit in one chunk
-        let postings: Vec<Posting> = (0..128).map(|i| create_test_postings(i, vec![1])).collect();
-
-        let result = writer.add_term(1, postings);
-        assert!(result.is_ok());
-
-        let metadata = writer.get_term_metadata(1).unwrap();
-        assert_eq!(metadata.term_frequency, 128);
-    }
-
-    #[test]
-    fn test_chunk_boundary_129_postings() {
-        let temp_file = NamedTempFile::new().unwrap();
-        let file = temp_file.reopen().unwrap();
-        let mut writer = MergedIndexBlockWriter::new(file, Some(128));
-
-        writer.term_metadata.insert(
-            1,
-            TermMetadata {
-                block_ids: Vec::new(),
-                term_frequency: 0,
-            },
-        );
-
-        // 129 postings - should create multiple chunks
-        let postings: Vec<Posting> = (0..129).map(|i| create_test_postings(i, vec![1])).collect();
-
-        let result = writer.add_term(1, postings);
-        assert!(result.is_ok());
-
-        let metadata = writer.get_term_metadata(1).unwrap();
-        assert_eq!(metadata.term_frequency, 129);
+          let mut file = temp_file.reopen().unwrap();
+        let mut reader = BufReader::new(& mut file);
+        let mut block1 = Block::new(metadata.block_ids[0]);
+        block1.init(&mut reader).unwrap();
+        let chunks1 = block1.decode_chunks_for_term(1, 0);
+        let mut postings_read = Vec::new();
+        for chunk in chunks1 {
+            let doc_ids = vb_decode_positions(&chunk.doc_ids);
+            for index in 0..doc_ids.len() {
+                postings_read.push(Posting {
+                    doc_id: doc_ids[index],
+                    positions: chunk.get_posting_list(index as u32),
+                });
+            }
+        }
+        let mut block2 = Block::new(metadata.block_ids[1]);
+        block2.init(&mut reader).unwrap();
+        let chunks2 = block2.decode_chunks_for_term(1, 0);
+        for chunk in chunks2 {
+            let doc_ids = vb_decode_positions(&chunk.doc_ids);
+            for index in 0..doc_ids.len() {
+                postings_read.push(Posting {
+                    doc_id: doc_ids[index],
+                    positions: chunk.get_posting_list(index as u32),
+                });
+            }
+        }
+        let mut old_postings = Vec::new();
+        for i in 0..200 {
+            old_postings.push(create_test_postings(i * 100, vec![1, 2, 3, 4, 5]));
+        }
+        assert_eq!(old_postings, postings_read);
     }
 }

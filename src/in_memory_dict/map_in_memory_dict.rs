@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapInMemoryDictPointer {
-    term_id: u32,
-    term_frequency: u32,
-    block_ids: Vec<u32>,
+    pub term_id: u32,
+    pub term_frequency: u32,
+    pub block_ids: Vec<u32>,
 }
 
 impl MapInMemoryDictPointer {
@@ -52,6 +52,10 @@ impl MapInMemoryDict {
         } else {
             0
         }
+    }
+
+    pub fn get_term_metadata(&self,term:&str)->&MapInMemoryDictPointer{
+        self.term_map.get(term).unwrap()
     }
 
     pub fn set_term_id(&mut self, term: &str, term_id: u32) {

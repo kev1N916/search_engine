@@ -24,6 +24,7 @@ pub struct Token {
     pub word: String,
 }
 
+#[derive(Debug,Clone)]
 pub struct Lemmatizer {
     lemmas: HashMap<String, String>,
 }
@@ -38,6 +39,8 @@ impl Lemmatizer {
         }
     }
 }
+
+#[derive(Debug,Clone)]
 pub struct SearchTokenizer {
     lemmatizer: Lemmatizer,
 }
@@ -204,12 +207,12 @@ impl SearchTokenizer {
                     }
                 };
 
-                if let Some(prev) = &prev_lemma {
-                    tokens.push(Token {
-                        position: position - 1,
-                        word: format!("{} {}", prev, current_lemma),
-                    });
-                }
+                // if let Some(prev) = &prev_lemma {
+                //     tokens.push(Token {
+                //         position: position - 1,
+                //         word: format!("{} {}", prev, current_lemma),
+                //     });
+                // }
 
                 prev_lemma = Some(current_lemma);
             }

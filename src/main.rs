@@ -8,8 +8,7 @@ mod positional_intersect;
 mod query_parser;
 mod scoring;
 pub mod search_engine;
-mod spimi;
-
+mod query_processor;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }

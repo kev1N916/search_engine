@@ -1,4 +1,4 @@
-use crate::{in_memory_dict::map_in_memory_dict::MapInMemoryDict, my_bk_tree::{self, BkTree}};
+use crate::{in_memory_dict::map_in_memory_dict::{MapInMemoryDict, MapInMemoryDictPointer}, my_bk_tree::{self, BkTree}};
 
 pub struct InMemoryIndexMetatdata {
     pub bk_tree: BkTree,
@@ -11,6 +11,10 @@ impl InMemoryIndexMetatdata {
             bk_tree: my_bk_tree::BkTree::new(),
             in_memory_dict: MapInMemoryDict::new(),
         }
+    }
+
+    pub fn get_term_metadata(&self,term:&str)->&MapInMemoryDictPointer{
+        self.in_memory_dict.get_term_metadata(term)
     }
 
     pub fn get_all_terms(&self)->Vec<String>{

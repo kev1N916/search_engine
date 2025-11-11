@@ -52,6 +52,9 @@ impl Chunk {
         chunk_bytes
     }
 
+    pub fn get_doc_ids(& self)->Vec<u32>{
+        vb_decode_positions(&self.doc_ids)
+    } 
     pub fn get_posting_list(& self,index:u32)->Vec<u32>{
        
        let mut posting_list: &[u8] = &[];
@@ -66,17 +69,16 @@ impl Chunk {
             i=j+1;
             current_index+=1;
         }
-        println!("{:?}",posting_list);
         vb_decode_positions(posting_list)
     }
 
     pub fn decode(&mut self, chunk_bytes: &[u8]) {
-        print!("{:?}",chunk_bytes);
         self.size_of_chunk = (4 + chunk_bytes.len()) as u32;
         let mut offset = 0;
         let max_doc_id = u32::from_le_bytes(chunk_bytes[offset..offset + 4].try_into().unwrap());
         offset += 4;
         self.max_doc_id = max_doc_id;
+        println!("size of chunk {} max doc id {}",self.size_of_chunk,self.max_doc_id);
         if max_doc_id == 0 {
             return;
         }
